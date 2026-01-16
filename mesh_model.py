@@ -3,185 +3,271 @@ import mediapipe as mp
 import pyvista as pv
 import numpy as np
 import threading
-import time
+import time 
+import tkinter as tk
+from tkinter import filedialog
+from typing import Optional, Tuple
+from dataclasses import dataclass
+
+# --- Configuration ---
+class Config:
+    PINCH_THRESHOLD = 0.05
+    ROTATION_SENSITIVITY = 120
+    SCALE_SENSITIVITY = 1.5
+    TARGET_FPS = 30
+    CAMERA_INDEX = 0
+    MESH_SCALE_BASE = 1.0 
+    
+    # Jarvis Aesthetics
+    HOLO_COLOR = "cyan"
+    HOLO_EDGE_COLOR = "white"
+    BG_DISTANCE = 20.0  # How far back the camera plane sits
+
+@dataclass
+class SharedState:
+    """Thread-safe state."""
+    video_frame: Optional[np.ndarray] = None
+    # (d_pitch, d_yaw, d_roll)
+    rotation_delta: Tuple[float, float, float] = (0.0, 0.0, 0.0) 
+    scale_factor: float = 1.0
+    is_tracking: bool = False
+    lock: threading.Lock = None
+    new_frame_available: bool = False
+    
+    def __post_init__(self):
+        if self.lock is None: self.lock = threading.Lock()
 
 class HandTracker(threading.Thread):
-    def __init__(self, shared_state: dict):
+    def __init__(self, shared_state: SharedState):
         super().__init__(daemon=True)
-        self.shared_state = shared_state
+        self.state = shared_state
         self.running = True
-        self.cap = cv2.VideoCapture(0)
+        self.cap = cv2.VideoCapture(Config.CAMERA_INDEX)
         
-        # Optimize MediaPipe for speed
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=False,
+        # Optimization: faster tracking
+        self.hands = mp.solutions.hands.Hands(
             max_num_hands=2,
-            model_complexity=0,
-            min_detection_confidence=0.6,
-            min_tracking_confidence=0.6
+            model_complexity=0, 
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.7
         )
-
-        self.prev_pinch_pos = None
-
+        
+        # Interaction memory
+        self.last_pinch_pos = None
+        self.last_pinch_dist = None
+        
     def run(self):
-        while self.running:
+        while self.running and self.cap.isOpened():
             success, frame = self.cap.read()
             if not success: continue
 
+            # Flip for mirror effect, convert to RGB
             frame = cv2.flip(frame, 1)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self.hands.process(rgb)
-
-            # Draw landmarks for the HUD
-            if results.multi_hand_landmarks:
-                for landmarks in results.multi_hand_landmarks:
-                    mp.solutions.drawing_utils.draw_landmarks(
-                        rgb, landmarks, self.mp_hands.HAND_CONNECTIONS)
             
-            self._calculate_gestures(results)
+            # --- Logic Calculation ---
+            rot_delta = (0, 0, 0)
+            scale_mult = 1.0
+            tracking = False
 
-            with self.shared_state['lock']:
-                self.shared_state['video_frame'] = rgb
-                self.shared_state['updated'] = True
+            if results.multi_hand_landmarks:
+                tracking = True
+                
+                # Check for "Pinch" (Rotation) - One Hand
+                # Index (8) and Thumb (4)
+                h1 = results.multi_hand_landmarks[0]
+                p1 = np.array([h1.landmark[8].x, h1.landmark[8].y])
+                p2 = np.array([h1.landmark[4].x, h1.landmark[4].y])
+                pinch_dist = np.linalg.norm(p1 - p2)
 
-    def _calculate_gestures(self, results):
-        if not results.multi_hand_landmarks:
-            with self.shared_state['lock']:
-                self.shared_state['rotation_delta'] = (0, 0)
-                self.prev_pinch_pos = None
-            return
+                # Gesture 1: One-handed Pinch to Rotate
+                if pinch_dist < Config.PINCH_THRESHOLD:
+                    center = (p1 + p2) / 2
+                    if self.last_pinch_pos is not None:
+                        # Calculate movement delta
+                        dx = (center[0] - self.last_pinch_pos[0]) * Config.ROTATION_SENSITIVITY
+                        dy = (center[1] - self.last_pinch_pos[1]) * Config.ROTATION_SENSITIVITY
+                        rot_delta = (dy, dx, 0) # Pitch, Yaw
+                    self.last_pinch_pos = center
+                else:
+                    self.last_pinch_pos = None
 
-        # Gesture 1: Rotation (Pinch)
-        hand = results.multi_hand_landmarks[0]
-        thumb = hand.landmark[4]
-        index = hand.landmark[8]
-        
-        dist = np.linalg.norm([thumb.x - index.x, thumb.y - index.y])
-        
-        with self.shared_state['lock']:
-            if dist < 0.05: # Pinch detected
-                current_pos = np.array([index.x, index.y])
-                if self.prev_pinch_pos is not None:
-                    delta = (current_pos - self.prev_pinch_pos) * 150 # Sensitivity
-                    self.shared_state['rotation_delta'] = (delta[1], delta[0])
-                self.prev_pinch_pos = current_pos
+                # Gesture 2: Two-handed Zoom
+                if len(results.multi_hand_landmarks) == 2:
+                    h2 = results.multi_hand_landmarks[1]
+                    # Distance between wrists or index fingers of both hands
+                    h1_pos = np.array([h1.landmark[8].x, h1.landmark[8].y])
+                    h2_pos = np.array([h2.landmark[8].x, h2.landmark[8].y])
+                    hand_dist = np.linalg.norm(h1_pos - h2_pos)
+
+                    if self.last_pinch_dist is not None:
+                        # Ratio change
+                        if self.last_pinch_dist > 0.01:
+                            scale_mult = hand_dist / self.last_pinch_dist
+                    self.last_pinch_dist = hand_dist
+                else:
+                    self.last_pinch_dist = None
             else:
-                self.shared_state['rotation_delta'] = (0, 0)
-                self.prev_pinch_pos = None
+                self.last_pinch_pos = None
+                self.last_pinch_dist = None
 
-        # Gesture 2: Zoom (Two Hands)
-        if len(results.multi_hand_landmarks) > 1:
-            h1 = results.multi_hand_landmarks[0].landmark[8]
-            h2 = results.multi_hand_landmarks[1].landmark[8]
-            dist = np.linalg.norm([h1.x - h2.x, h1.y - h2.y])
-            with self.shared_state['lock']:
-                # Simple exponential scaling
-                self.shared_state['current_scale'] = np.clip(dist * 2.5, 0.2, 3.0)
+            # Update Shared State
+            with self.state.lock:
+                self.state.video_frame = rgb # Keep RGB for texture
+                self.state.new_frame_available = True
+                self.state.rotation_delta = rot_delta
+                self.state.scale_factor = scale_mult
+                self.state.is_tracking = tracking
 
-class HoloMedVisualizer:
+    def stop(self):
+        self.running = False
+        self.cap.release()
+
+class JarvisVisualizer:
     def __init__(self):
-        self.shared_state = {
-            'video_frame': None,
-            'rotation_delta': (0, 0),
-            'current_scale': 1.0,
-            'lock': threading.Lock(),
-            'updated': False
-        }
+        self.state = SharedState()
+        self.tracker = HandTracker(self.state)
         
-        self.plotter = pv.Plotter()
+        # --- NEW: File Picker Logic ---
+        print("Initializing Jarvis System...")
+        model_path = self.select_file_gui()
+        
+        # 1. Setup Scene
+        self.plotter = pv.Plotter(window_size=(1280, 720))
         self.plotter.set_background('black')
-        # --- CAMERA SETUP FOR LIVE VIDEO BACKGROUND ---
-        # self.plotter.enable_parallel_projection()
+        self.plotter.disable()
+        
+        # 2. Load Model with Fallback
+        self.mesh = self.load_and_normalize_mesh(model_path)
 
-        self.plotter.camera.position = (0, 0, 5)
+        # 3. Apply "Hologram" Style
+        # Inner "Ghost" volume
+        self.actor_inner = self.plotter.add_mesh(
+            self.mesh, 
+            color=Config.HOLO_COLOR, 
+            opacity=0.15,
+            style='surface',
+            lighting=False
+        )
+        # Outer "Wireframe" structure
+        self.actor_outer = self.plotter.add_mesh(
+            self.mesh,
+            color=Config.HOLO_EDGE_COLOR,
+            opacity=0.8,
+            style='wireframe',
+            lighting=False,
+            line_width=2
+        )
+
+        # 4. AR Background Plane
+        self.bg_plane = pv.Plane(
+            center=(0, 0, -Config.BG_DISTANCE), 
+            direction=(0, 0, 1), 
+            i_size=32, j_size=18
+        )
+        self.bg_actor = self.plotter.add_mesh(self.bg_plane, lighting=False)
+        self.bg_texture = None
+
+        # Camera setup
+        self.plotter.camera.position = (0, 0, 10)
         self.plotter.camera.focal_point = (0, 0, 0)
         self.plotter.camera.up = (0, 1, 0)
 
+        # Interaction persistence
+        self.current_rot = [0, 0, 0]
+        self.current_scale = 1.0
 
-        # Disable mouse-based interaction (gesture-only control)
-        self.plotter.disable()
-
+    def select_file_gui(self) -> str:
+        """Opens a native system file picker to choose a 3D model."""
+        # Create a hidden root window (we don't want a full GUI, just the popup)
+        root = tk.Tk()
+        root.withdraw() 
         
-        # Load Mesh
-        self.base_mesh = pv.examples.download_brain()
-        self.display_mesh = self.base_mesh.copy()
-
-        self.display_mesh.scale(0.7, inplace=True)
-
+        print("Waiting for file selection...")
+        file_path = filedialog.askopenfilename(
+            title="Select 3D Model for Hologram",
+            filetypes=[
+                ("3D Models", "*.stl *.obj *.ply *.vtk"),
+                ("All Files", "*.*")
+            ]
+        )
         
-        # Add Actor once
-        self.actor = self.plotter.add_mesh(
-            self.display_mesh, 
-            color='cyan', 
-            opacity=0.7, 
-            smooth_shading=True,
-            show_edges=True,
-            edge_color='#004444'
+        root.destroy() # Cleanup
+        return file_path
+
+    def load_and_normalize_mesh(self, path: str):
+        """Loads a mesh and forces it to a standard size/position."""
+        try:
+            if not path:
+                raise ValueError("No file selected")
+                
+            print(f"Loading: {path}")
+            mesh = pv.read(path)
+        except Exception as e:
+            print(f"⚠️ Could not load custom file: {e}")
+            print("↺ Reverting to Default Brain Model")
+            mesh = pv.examples.download_brain()
+
+        # Normalization Routine
+        # 1. Center at origin
+        mesh.translate(-np.array(mesh.center), inplace=True)
+        
+        # 2. Rotate 90 degrees if it's an OBJ (often they come in lying down)
+        if path and path.lower().endswith('.obj'):
+            mesh.rotate_x(-90, inplace=True)
+
+        # 3. Scale to fit screen (target size ~10 units)
+        bounds = mesh.bounds
+        max_dim = max(
+            bounds[1] - bounds[0], 
+            bounds[3] - bounds[2], 
+            bounds[5] - bounds[4]
         )
+        
+        if max_dim > 0:
+            scale_factor = 5.0 / max_dim
+            mesh.scale(scale_factor, inplace=True)
+            
+        return mesh
 
-        # Setup Video Plane
-        self.bg_plane = pv.Plane(
-            center=(0, 0, -3),   # far behind the brain
-            direction=(0, 0, 1),
-            i_size=10,
-            j_size=7
-        )
-        self.bg_actor = None
+    def update_loop(self):
+        # ... (Keep the exact same update logic from previous response) ...
+        with self.state.lock:
+            frame = self.state.video_frame
+            has_new_frame = self.state.new_frame_available
+            rot_delta = self.state.rotation_delta
+            scale_mult = self.state.scale_factor
+            self.state.new_frame_available = False
 
-        self.tracker = HandTracker(self.shared_state)
-        self.rot_x, self.rot_y = 0, 0
-        self.frame_counter = 0
+        if has_new_frame and frame is not None:
+            tex = pv.numpy_to_texture(frame)
+            self.bg_actor.texture = tex
 
+        if rot_delta != (0,0,0):
+            self.current_rot[0] += rot_delta[0]
+            self.current_rot[1] += rot_delta[1]
+            for actor in [self.actor_inner, self.actor_outer]:
+                actor.orientation = self.current_rot
+
+        if scale_mult != 1.0:
+            self.current_scale *= scale_mult
+            self.current_scale = max(0.2, min(self.current_scale, 5.0))
+            for actor in [self.actor_inner, self.actor_outer]:
+                actor.scale = [self.current_scale] * 3
 
     def start(self):
+        # ... (Keep same start logic) ...
         self.tracker.start()
-        # Non-blocking render loop
         self.plotter.show(interactive_update=True)
-        
         while self.plotter.iren.initialized:
-            self.update()
+            start_t = time.time()
+            self.update_loop()
             self.plotter.update()
-            time.sleep(0.04)  # ~25 FPS
-
-
-    def update(self):
-        with self.shared_state['lock']:
-            frame = self.shared_state['video_frame']
-            rot_delta = self.shared_state['rotation_delta']
-            scale = self.shared_state['current_scale']
-            new_data = self.shared_state['updated']
-            self.shared_state['updated'] = False
-
-    # -------------------------------
-    # Update live camera background
-    # -------------------------------
-        self.frame_counter += 1
-        if frame is not None and new_data and self.frame_counter % 2 == 0:
-
-            tex = pv.numpy_to_texture(np.flipud(frame))
-
-            if self.bg_actor is None:
-                self.bg_actor = self.plotter.add_mesh(
-                    self.bg_plane,
-                    texture=tex,
-                    lighting=False
-                )
-            else:
-                self.bg_actor.texture = tex
-
-        # -------------------------------
-        # Update 3D model using gestures
-        # -------------------------------
-        if rot_delta != (0, 0) or scale != 1.0:
-            self.rot_x += rot_delta[0]
-            self.rot_y += rot_delta[1]
-
-            self.actor.SetOrientation(self.rot_x, self.rot_y, 0)
-            self.actor.SetScale(scale)
-
-
-
-
+            dt = time.time() - start_t
+            time.sleep(max(0, (1/Config.TARGET_FPS) - dt))
+        self.tracker.stop()
+        
 if __name__ == "__main__":
-    HoloMedVisualizer().start()
+    app = JarvisVisualizer()
+    app.start()
