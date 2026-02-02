@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./holomed.db
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/holomed.db:/app/holomed.db
+    restart: unless-stopped
+
+  webapp:
+    build: ./Webapp
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  uploads:
+  database:
