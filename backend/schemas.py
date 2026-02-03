@@ -11,7 +11,7 @@ class UserCreate(BaseModel):
     password: str
 
 class UserResponse(BaseModel):
-    id: int
+    id: str  # ObjectId as string
     email: str
     subscription_tier: str
     created_at: datetime
@@ -23,7 +23,7 @@ class ModelCreate(BaseModel):
     name: Optional[str] = None
 
 class ModelResponse(BaseModel):
-    id: int
+    id: str  # ObjectId as string
     name: str
     file_path: str
     file_format: str
@@ -34,12 +34,12 @@ class ModelResponse(BaseModel):
         from_attributes = True
 
 class SessionCreate(BaseModel):
-    model_id: int
+    model_id: str  # ObjectId as string
 
 class SessionResponse(BaseModel):
-    id: int
-    user_id: int
-    model_id: int
+    id: str  # ObjectId as string
+    user_id: str  # ObjectId as string
+    model_id: str  # ObjectId as string
     started_at: datetime
     ended_at: Optional[datetime]
     

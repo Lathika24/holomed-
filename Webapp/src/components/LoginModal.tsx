@@ -1,9 +1,7 @@
-'use client';
-
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import axios from 'axios';
-import { useAuthStore } from '@/store/authStore';
+import { useAuthStore } from '../store/authStore';
 
 interface LoginModalProps {
   onClose: () => void;
@@ -19,7 +17,7 @@ interface RegisterForm extends LoginForm {
   confirmPassword: string;
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function LoginModal({ onClose, onSuccess }: LoginModalProps) {
   const [isLogin, setIsLogin] = useState(true);

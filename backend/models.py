@@ -1,47 +1,43 @@
-"""
-Database models for HoloMed
-"""
+from beanie import Document
+from pydantic import Field, EmailStr, ConfigDict # Import ConfigDict
+from typing import Optional
+from datetime import datetime, timezone
 
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON
-from sqlalchemy.orm import relationship
-from datetime import datetime
-from database import Base
+class User(Document):
+    email: EmailStr = Field(..., unique=True, index=True)
+    hashed_password: str
+    subscription_tier: str = Field(default="free")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    class Settings:
+        name = "users"
+        indexes = ["email"]
 
-class User(Base):
-    __tablename__ = "users"
+class Model3D(Document):
+    # This allows Pydantic to ignore the "model_" prefix protection
+    model_config = ConfigDict(protected_namespaces=()) 
     
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
-    subscription_tier = Column(String, default="free")  # free, pro, enterprise
-    created_at = Column(DateTime, default=datetime.utcnow)
+    user_id: str = Field(..., index=True)
+    name: str
+    file_path: str
+    file_format: str
+    file_size: Optional[int] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
-    models = relationship("Model3D", back_populates="owner", cascade="all, delete-orphan")
-    sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
+    class Settings:
+        name = "models"
+        indexes = ["user_id"]
 
-class Model3D(Base):
-    __tablename__ = "models"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    name = Column(String, nullable=False)
-    file_path = Column(String, nullable=False)  # Local path or S3/GCS path
-    file_format = Column(String, nullable=False)  # stl, obj, ply, vtk, gltf, glb
-    file_size = Column(Integer)  # Size in bytes
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    owner = relationship("User", back_populates="models")
-    sessions = relationship("Session", back_populates="model", cascade="all, delete-orphan")
+class Session(Document):
+    # This fixes the warning for the 'model_id' field
+    model_config = ConfigDict(protected_namespaces=())
 
-class Session(Base):
-    __tablename__ = "sessions"
+    user_id: str = Field(..., index=True)
+    model_id: str = Field(..., index=True)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc)) # Updated to non-deprecated factory
+    ended_at: Optional[datetime] = None
+    gesture_data: Optional[dict] = None
     
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    model_id = Column(Integer, ForeignKey("models.id"), nullable=False)
-    started_at = Column(DateTime, default=datetime.utcnow)
-    ended_at = Column(DateTime, nullable=True)
-    gesture_data = Column(JSON, nullable=True)  # Store gesture analytics
-    
-    user = relationship("User", back_populates="sessions")
-    model = relationship("Model3D", back_populates="sessions")
+    class Settings:
+        name = "sessions"
+        indexes = ["user_id", "model_id"]

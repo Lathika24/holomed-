@@ -3,7 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import axios from 'axios';
 
 interface User {
-  id: number;
+  id: string;
   email: string;
   subscription_tier: string;
 }
@@ -14,10 +14,10 @@ interface AuthState {
   isAuthenticated: boolean;
   setAuth: (token: string, user: User) => void;
   clearAuth: () => void;
-  checkAuth: () => void;
+  checkAuth: () => Promise<void>;
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export const useAuthStore = create<AuthState>()(
   persist(

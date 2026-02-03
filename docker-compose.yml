@@ -1,16 +1,28 @@
 version: '3.8'
 
 services:
+  mongodb:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    restart: unless-stopped
+    environment:
+      - MONGO_INITDB_DATABASE=holomed
+
   backend:
     build: ./backend
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=sqlite:///./holomed.db
+      - MONGODB_URL=mongodb://mongodb:27017
+      - DATABASE_NAME=holomed
       - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
     volumes:
       - ./backend/uploads:/app/uploads
-      - ./backend/holomed.db:/app/holomed.db
+    depends_on:
+      - mongodb
     restart: unless-stopped
 
   webapp:
@@ -25,4 +37,4 @@ services:
 
 volumes:
   uploads:
-  database:
+  mongodb_data:

@@ -1,12 +1,10 @@
-'use client';
-
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
-import { useAuthStore } from '@/store/authStore';
+import { useAuthStore } from '../store/authStore';
 
 interface Model {
-  id: number;
+  id: string;
   name: string;
   file_path: string;
   file_format: string;
@@ -18,7 +16,7 @@ interface ModelSelectorProps {
   isAuthenticated: boolean;
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export default function ModelSelector({ onSelect, isAuthenticated }: ModelSelectorProps) {
   const [uploading, setUploading] = useState(false);
@@ -70,16 +68,32 @@ export default function ModelSelector({ onSelect, isAuthenticated }: ModelSelect
 
   const handleModelSelect = (model: Model) => {
     // Construct full URL for the model
-    const modelUrl = model.file_path.startsWith('http') 
-      ? model.file_path 
-      : `${API_URL}/${model.file_path}`;
+    let modelUrl: string;
+    if (model.file_path.startsWith('http')) {
+      modelUrl = model.file_path;
+    } else if (model.file_path.startsWith('uploads/')) {
+      // Remove 'uploads/' prefix if present, as it's handled by the mount
+      modelUrl = `${API_URL}/${model.file_path}`;
+    } else {
+      // Assume it's a relative path in uploads directory
+      modelUrl = `${API_URL}/uploads/${model.file_path}`;
+    }
     onSelect(modelUrl);
   };
 
   // Default model for non-authenticated users
   const useDefaultModel = () => {
-    // You can use a default model URL or a sample model
-    onSelect('https://threejs.org/examples/models/gltf/Duck/glTF/Duck.gltf');
+    // Use a reliable CDN-hosted model that allows CORS
+    onSelect('https://cdn.jsdelivr.net/gh/mrdoob/three.js@dev/examples/models/gltf/Duck/glTF/Duck.gltf');
+  };
+
+  const handleLocalFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Create a local object URL for the file
+    const fileUrl = URL.createObjectURL(file);
+    onSelect(fileUrl);
   };
 
   return (
@@ -93,16 +107,27 @@ export default function ModelSelector({ onSelect, isAuthenticated }: ModelSelect
         </p>
 
         {!isAuthenticated ? (
-          <div className="bg-gray-900 rounded-lg p-8 text-center">
+          <div className="bg-gray-900 rounded-lg p-8 text-center space-y-4">
             <p className="text-gray-400 mb-4">
               Login to upload and manage your 3D models, or try with a sample model
             </p>
-            <button
-              onClick={useDefaultModel}
-              className="px-6 py-3 bg-cyan-500 text-black rounded-lg hover:bg-cyan-400 transition-colors font-semibold"
-            >
-              Try Sample Model
-            </button>
+            <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
+              <button
+                onClick={useDefaultModel}
+                className="px-6 py-3 bg-cyan-500 text-black rounded-lg hover:bg-cyan-400 transition-colors font-semibold"
+              >
+                Try Sample Model
+              </button>
+              <label className="px-6 py-3 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors cursor-pointer font-semibold">
+                Load Local File
+                <input
+                  type="file"
+                  className="hidden"
+                  accept=".stl,.obj,.ply,.vtk,.gltf,.glb"
+                  onChange={handleLocalFileSelect}
+                />
+              </label>
+            </div>
           </div>
         ) : (
           <div className="space-y-6">

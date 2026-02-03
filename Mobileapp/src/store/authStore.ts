@@ -4,7 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 
 interface User {
-  id: number;
+  id: string;
   email: string;
   subscription_tier: string;
 }
