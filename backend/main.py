@@ -5,7 +5,7 @@ FastAPI server for managing users, 3D models, and sessions
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from typing import List, Optional
@@ -39,14 +39,26 @@ app = FastAPI(
 # CORS configuration for web/mobile apps
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8081")
 allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",")]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
+# For desktop applications, allow all origins in development
+# Note: Cannot use "*" with allow_credentials=True, so we disable credentials for "*"
+if os.getenv("ENVIRONMENT") != "production":
+    # Allow all origins but disable credentials (desktop apps don't need cookies)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,  # Must be False when using "*"
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 security = HTTPBearer()
 
 # Static file serving for uploaded models
@@ -59,7 +71,6 @@ app.mount("/uploads", StaticFiles(directory=upload_dir), name="uploads")
 async def health():
     return {"status": "healthy", "service": "HoloMed API"}
 
-# Authentication endpoints
 @app.post("/api/auth/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register(user_data: UserCreate):
     """Register a new user"""
@@ -75,6 +86,7 @@ async def register(user_data: UserCreate):
     hashed_pw = hash_password(user_data.password)
     new_user = User(
         email=user_data.email,
+        username=user_data.username,  # Add username
         hashed_password=hashed_pw,
         subscription_tier="free"
     )
@@ -88,13 +100,20 @@ async def register(user_data: UserCreate):
     )
 
 @app.post("/api/auth/login")
-async def login(user_data: UserCreate):
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     """Authenticate user and return access token"""
-    user = await User.find_one(User.email == user_data.email)
-    if not user or not verify_password(user_data.password, user.hashed_password):
+    # Try to find user by email or username
+    user = await User.find_one(
+        {"$or": [
+            {"email": form_data.username},  # username field contains email
+            {"username": form_data.username}  # or username
+        ]}
+    )
+    
+    if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
+            detail="Incorrect email/username or password"
         )
     
     access_token = create_access_token(data={"sub": user.email, "user_id": str(user.id)})

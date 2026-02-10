@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 class User(Document):
     email: EmailStr = Field(..., unique=True, index=True)
+    username: Optional[str] = None  # Add username field
     hashed_password: str
     subscription_tier: str = Field(default="free")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

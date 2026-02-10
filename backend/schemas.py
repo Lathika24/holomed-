@@ -9,6 +9,9 @@ from typing import Optional
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
+    username: Optional[str] = None  # Add optional username field
+
+
 
 class UserResponse(BaseModel):
     id: str  # ObjectId as string

@@ -7,15 +7,18 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from pathlib import Path
+import logging
 from config import Config
+
+logger = logging.getLogger(__name__)
 
 class UploadThread(QThread):
     """Thread for uploading models without blocking UI"""
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
     
-    def __init__(self, api_client, file_path, name):
-        super().__init__()
+    def __init__(self, api_client, file_path, name, parent=None):
+        super().__init__(parent)
         self.api_client = api_client
         self.file_path = file_path
         self.name = name
@@ -138,11 +141,17 @@ class ModelManager(QWidget):
         self.delete_btn.clicked.connect(self.delete_selected)
         layout.addWidget(self.delete_btn)
         
+        # Add keyboard shortcuts
+        self.upload_btn.setShortcut("Ctrl+U")
+        self.refresh_btn.setShortcut("F5")
+        self.delete_btn.setShortcut("Delete")
+        
         self.setLayout(layout)
     
     def refresh_models(self):
         """Refresh the model list from API"""
         try:
+            logger.info("Refreshing model list")
             self.models = self.api_client.get_models()
             self.model_list.clear()
             
@@ -156,11 +165,39 @@ class ModelManager(QWidget):
                     file_size = model.get('file_size', 0)
                     size_str = f"{file_size / (1024*1024):.2f} MB" if file_size > 0 else "Unknown size"
                     
+                    # Get upload date if available
+                    upload_date = model.get('created_at', '')
+                    if upload_date:
+                        try:
+                            from datetime import datetime
+                            # Parse ISO format date
+                            dt = datetime.fromisoformat(upload_date.replace('Z', '+00:00'))
+                            date_str = dt.strftime('%Y-%m-%d')
+                        except:
+                            date_str = ''
+                    else:
+                        date_str = ''
+                    
                     item_text = f"{model['name']} ({model.get('file_format', 'unknown').upper()}) - {size_str}"
+                    if date_str:
+                        item_text += f" - {date_str}"
+                    
                     item = QListWidgetItem(item_text)
                     item.setData(Qt.ItemDataRole.UserRole, model['id'])
+                    
+                    # Add tooltip with more details
+                    tooltip = f"Name: {model['name']}\n"
+                    tooltip += f"Format: {model.get('file_format', 'unknown').upper()}\n"
+                    tooltip += f"Size: {size_str}\n"
+                    if upload_date:
+                        tooltip += f"Uploaded: {date_str}\n"
+                    tooltip += f"ID: {model['id']}"
+                    item.setToolTip(tooltip)
+                    
                     self.model_list.addItem(item)
+            logger.info(f"Loaded {len(self.models)} models")
         except Exception as e:
+            logger.error(f"Failed to load models: {e}")
             QMessageBox.warning(self, "Error", f"Failed to load models:\n{str(e)}")
     
     def upload_model(self):
@@ -201,16 +238,26 @@ class ModelManager(QWidget):
         self.upload_btn.setEnabled(False)
         self.upload_btn.setText("Uploading...")
         
+        # Show progress dialog
+        self.progress_dialog = QProgressDialog("Uploading model...", "Cancel", 0, 0, self)
+        self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        self.progress_dialog.setCancelButton(None)  # Can't cancel during upload
+        self.progress_dialog.show()
+        
         # Upload in background thread
         self.upload_thread = UploadThread(self.api_client, file_path, name.strip())
         self.upload_thread.finished.connect(self.on_upload_success)
         self.upload_thread.error.connect(self.on_upload_error)
         self.upload_thread.start()
+        logger.info(f"Starting upload of {name}")
     
     def on_upload_success(self, result):
         """Handle successful upload"""
+        if hasattr(self, 'progress_dialog'):
+            self.progress_dialog.close()
         self.upload_btn.setEnabled(True)
         self.upload_btn.setText("Upload Model")
+        logger.info(f"Model '{result.get('name', 'Unknown')}' uploaded successfully")
         QMessageBox.information(
             self, "Success", 
             f"Model '{result.get('name', 'Unknown')}' uploaded successfully!"
@@ -220,8 +267,11 @@ class ModelManager(QWidget):
     
     def on_upload_error(self, error_msg):
         """Handle upload error"""
+        if hasattr(self, 'progress_dialog'):
+            self.progress_dialog.close()
         self.upload_btn.setEnabled(True)
         self.upload_btn.setText("Upload Model")
+        logger.error(f"Upload failed: {error_msg}")
         QMessageBox.critical(self, "Upload Error", f"Upload failed:\n{error_msg}")
     
     def on_model_clicked(self, item):

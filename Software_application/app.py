@@ -197,7 +197,8 @@ class MainWindow(QMainWindow):
         self.api_client.set_token(token)
         self.welcome_label.setText(f"Welcome, {username}!")
         self.statusBar().showMessage(f"Logged in as {username}")
-    
+    # Refresh models after login
+        self.model_manager.refresh_models()
     def on_model_selected(self, model_id: str):
         """Handle model selection"""
         self.selected_model_id = model_id
