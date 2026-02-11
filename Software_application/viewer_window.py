@@ -7,6 +7,7 @@ import threading
 import time
 from typing import Optional, Tuple
 from dataclasses import dataclass
+from pathlib import Path
 from PyQt6.QtCore import QThread, pyqtSignal
 from config import Config
 
@@ -151,6 +152,8 @@ class ViewerWindow:
         self.model_path = model_path
         self.plotter = None
         self.mesh = None
+        self.texture = None
+        self.actor = None
         self.actor_inner = None
         self.actor_outer = None
         self.bg_actor = None
@@ -160,14 +163,26 @@ class ViewerWindow:
         self.running = False
     
     def load_model(self, model_path: str):
-        """Load a 3D model"""
+        """Load a 3D model with texture support"""
+        self.texture = None
+        
         try:
             if not model_path:
                 print("No model path provided, using default brain model")
                 self.mesh = pv.examples.download_brain()
             else:
                 print(f"Loading model from: {model_path}")
-                self.mesh = pv.read(model_path)
+                
+                # Try to load mesh with texture support
+                if model_path.lower().endswith('.obj'):
+                    # OBJ files may have textures - try to load them
+                    self.mesh, self.texture = self.load_obj_with_texture(model_path)
+                else:
+                    # For other formats, try standard loading
+                    self.mesh = pv.read(model_path)
+                    # Check if mesh has texture coordinates
+                    if hasattr(self.mesh, 'texture_coordinates') and self.mesh.texture_coordinates is not None:
+                        self.texture = self.load_texture_from_path(model_path)
             
             # Normalize
             self.mesh.translate(-np.array(self.mesh.center), inplace=True)
@@ -184,11 +199,112 @@ class ViewerWindow:
                 scale_factor = 5.0 / max_dim
                 self.mesh.scale(scale_factor, inplace=True)
             
-            print("Model loaded successfully")
+            if self.texture:
+                print("✓ Model loaded with texture")
+            else:
+                print("✓ Model loaded successfully (no texture)")
         except Exception as e:
             print(f"Error loading model: {e}")
             print("Falling back to default brain model")
             self.mesh = pv.examples.download_brain()
+            self.texture = None
+    
+    def load_obj_with_texture(self, obj_path: str):
+        """Loads OBJ file and attempts to load associated texture files."""
+        mesh = pv.read(obj_path)
+        texture = None
+        
+        # OBJ files often have associated .mtl files and texture images
+        obj_dir = Path(obj_path).parent
+        obj_name = Path(obj_path).stem
+        
+        # Common texture file extensions
+        texture_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tga', '.tiff']
+        
+        # Try to find texture files in the same directory
+        for ext in texture_extensions:
+            # Try various naming conventions
+            possible_names = [
+                obj_name + ext,
+                obj_name + '_texture' + ext,
+                obj_name + '_diffuse' + ext,
+                'texture' + ext,
+                'diffuse' + ext,
+            ]
+            
+            for tex_name in possible_names:
+                tex_path = obj_dir / tex_name
+                if tex_path.exists():
+                    try:
+                        texture = pv.read_texture(str(tex_path))
+                        print(f"✓ Found texture: {tex_path}")
+                        return mesh, texture
+                    except Exception as e:
+                        print(f"⚠️ Could not load texture {tex_path}: {e}")
+                        continue
+        
+        # Try loading from MTL file if it exists
+        mtl_path = obj_dir / (obj_name + '.mtl')
+        if mtl_path.exists():
+            texture = self.load_texture_from_mtl(str(mtl_path), obj_dir)
+            if texture is not None:
+                return mesh, texture
+        
+        # Check if mesh already has texture coordinates but no texture loaded
+        if hasattr(mesh, 'texture_coordinates') and mesh.texture_coordinates is not None:
+            # Try to find any image file in the directory
+            for img_file in obj_dir.glob('*.png'):
+                try:
+                    texture = pv.read_texture(str(img_file))
+                    print(f"✓ Found texture: {img_file}")
+                    return mesh, texture
+                except:
+                    continue
+            for img_file in obj_dir.glob('*.jpg'):
+                try:
+                    texture = pv.read_texture(str(img_file))
+                    print(f"✓ Found texture: {img_file}")
+                    return mesh, texture
+                except:
+                    continue
+        
+        return mesh, None
+    
+    def load_texture_from_mtl(self, mtl_path: str, obj_dir: Path):
+        """Attempts to load texture referenced in MTL file."""
+        try:
+            with open(mtl_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    # Look for map_Kd (diffuse texture) or map_Ka (ambient texture)
+                    if line.startswith('map_Kd') or line.startswith('map_Ka'):
+                        tex_file = line.split()[-1]
+                        # Handle relative paths
+                        tex_path = obj_dir / tex_file
+                        if tex_path.exists():
+                            return pv.read_texture(str(tex_path))
+                        # Try with just filename if path doesn't work
+                        tex_path = obj_dir / Path(tex_file).name
+                        if tex_path.exists():
+                            return pv.read_texture(str(tex_path))
+        except Exception as e:
+            print(f"⚠️ Error reading MTL file: {e}")
+        return None
+    
+    def load_texture_from_path(self, model_path: str):
+        """Attempts to find and load texture file based on model path."""
+        model_dir = Path(model_path).parent
+        model_name = Path(model_path).stem
+        
+        texture_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tga']
+        for ext in texture_extensions:
+            tex_path = model_dir / (model_name + ext)
+            if tex_path.exists():
+                try:
+                    return pv.read_texture(str(tex_path))
+                except:
+                    continue
+        return None
     
     def setup_scene(self):
         """Setup the 3D scene"""
@@ -200,23 +316,37 @@ class ViewerWindow:
         self.plotter.disable()
         
         if self.mesh:
-            # Inner volume
-            self.actor_inner = self.plotter.add_mesh(
-                self.mesh,
-                color=Config.HOLO_COLOR,
-                opacity=0.15,
-                style='surface',
-                lighting=False
-            )
-            # Outer wireframe
-            self.actor_outer = self.plotter.add_mesh(
-                self.mesh,
-                color=Config.HOLO_EDGE_COLOR,
-                opacity=0.8,
-                style='wireframe',
-                lighting=False,
-                line_width=2
-            )
+            # Display model with original texture if available
+            if self.texture is not None:
+                # Model has texture - apply it
+                self.actor = self.plotter.add_mesh(
+                    self.mesh,
+                    texture=self.texture,
+                    style='surface',
+                    show_edges=False,
+                    lighting=True,
+                    smooth_shading=True
+                )
+                print("✓ Displaying model with texture")
+            else:
+                # No texture - use default material or hologram style
+                # Inner volume
+                self.actor_inner = self.plotter.add_mesh(
+                    self.mesh,
+                    color=Config.HOLO_COLOR,
+                    opacity=0.15,
+                    style='surface',
+                    lighting=False
+                )
+                # Outer wireframe
+                self.actor_outer = self.plotter.add_mesh(
+                    self.mesh,
+                    color=Config.HOLO_EDGE_COLOR,
+                    opacity=0.8,
+                    style='wireframe',
+                    lighting=False,
+                    line_width=2
+                )
         
         # Background plane for camera feed
         bg_plane = pv.Plane(
@@ -243,19 +373,27 @@ class ViewerWindow:
     
     def update_rotation(self, rot_delta: Tuple[float, float, float]):
         """Update model rotation"""
-        if rot_delta != (0, 0, 0) and self.actor_inner and self.actor_outer:
+        if rot_delta != (0, 0, 0):
             self.current_rot[0] += rot_delta[0]
             self.current_rot[1] += rot_delta[1]
-            self.actor_inner.orientation = self.current_rot
-            self.actor_outer.orientation = self.current_rot
+            
+            if self.actor:
+                self.actor.orientation = self.current_rot
+            elif self.actor_inner and self.actor_outer:
+                self.actor_inner.orientation = self.current_rot
+                self.actor_outer.orientation = self.current_rot
     
     def update_scale(self, scale_mult: float):
         """Update model scale"""
-        if scale_mult != 1.0 and self.actor_inner and self.actor_outer:
+        if scale_mult != 1.0:
             self.current_scale *= scale_mult
             self.current_scale = max(0.2, min(self.current_scale, 5.0))
-            self.actor_inner.scale = [self.current_scale] * 3
-            self.actor_outer.scale = [self.current_scale] * 3
+            
+            if self.actor:
+                self.actor.scale = [self.current_scale] * 3
+            elif self.actor_inner and self.actor_outer:
+                self.actor_inner.scale = [self.current_scale] * 3
+                self.actor_outer.scale = [self.current_scale] * 3
     
     def show(self):
         """Show the visualization"""

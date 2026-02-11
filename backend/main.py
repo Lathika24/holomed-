@@ -71,9 +71,19 @@ app.mount("/uploads", StaticFiles(directory=upload_dir), name="uploads")
 async def health():
     return {"status": "healthy", "service": "HoloMed API"}
 
+MAX_PASSWORD_LEN = 72  # bcrypt limit
+
 @app.post("/api/auth/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register(user_data: UserCreate):
     """Register a new user"""
+    # Validate password length (bcrypt limit is 72 bytes)
+    password_bytes = user_data.password.encode("utf-8")
+    if len(password_bytes) > MAX_PASSWORD_LEN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Password too long. Maximum {MAX_PASSWORD_LEN} characters allowed."
+        )
+    
     # Check if user already exists
     existing_user = await User.find_one(User.email == user_data.email)
     if existing_user:
@@ -83,22 +93,29 @@ async def register(user_data: UserCreate):
         )
     
     # Create new user
-    hashed_pw = hash_password(user_data.password)
-    new_user = User(
-        email=user_data.email,
-        username=user_data.username,  # Add username
-        hashed_password=hashed_pw,
-        subscription_tier="free"
-    )
-    await new_user.insert()
-    
-    return UserResponse(
-        id=str(new_user.id),
-        email=new_user.email,
-        subscription_tier=new_user.subscription_tier,
-        created_at=new_user.created_at
-    )
-
+    try:
+        hashed_pw = hash_password(user_data.password)
+        new_user = User(
+            email=user_data.email,
+            username=user_data.username,
+            hashed_password=hashed_pw,
+            subscription_tier="free"
+        )
+        await new_user.insert()
+        
+        return UserResponse(
+            id=str(new_user.id),
+            email=new_user.email,
+            subscription_tier=new_user.subscription_tier,
+            created_at=new_user.created_at
+        )
+    except Exception as e:
+        # Handle any database errors (e.g., duplicate key, connection issues)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Registration failed: {str(e)}"
+        )
+        
 @app.post("/api/auth/login")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     """Authenticate user and return access token"""
